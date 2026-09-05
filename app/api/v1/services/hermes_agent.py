@@ -20,16 +20,19 @@ class HermesAgentService:
     ) -> AsyncGenerator[str, None]:
         """Generate simulated Server-Sent Events (SSE) stream for Hermes Agent."""
         start_time = time.time()
-        scaffold_level = request.context_window.scaffold_level
+        scaffold_level = request.context_window.scaffold_level or 1
+        prompt_text = request.prompt or "Halo Ambis.in"
+        mode = request.mode or "ask"
+        user_id_str = str(request.user_id) if request.user_id else "anonymous"
 
         # Helper to format SSE message
         def format_sse(event_type: str, data: dict) -> str:
-            event = HermesAgentSSEEvent(event=event_type, data=data)  # type: ignore
+            event = HermesAgentSSEEvent(event=event_type, data=data)
             return f"event: {event.event}\ndata: {json.dumps(event.data, ensure_ascii=False)}\n\n"
 
         # 1. Event: Thinking (Reasoning steps)
         thinking_steps = [
-            f"Menganalisis prompt siswa: '{request.prompt[:60]}...'",
+            f"Menganalisis prompt siswa: '{prompt_text[:60]}...'",
             f"Mengevaluasi learning state dan tingkat scaffolding aktif (Level {scaffold_level})...",
             "Mengidentifikasi potensi miskonsepsi (konseptual vs prosedural)...",
         ]
@@ -38,13 +41,14 @@ class HermesAgentService:
             yield format_sse("thinking", {"thought": step, "timestamp": time.time()})
 
         # 2. Event: Tool Calling (Simulated tool execution based on mode)
-        if "diagnose_gap" in request.tools_enabled:
+        tools = request.tools_enabled or []
+        if "diagnose_gap" in tools:
             await asyncio.sleep(0.15)
             tool_call_payload = {
                 "tool_name": "diagnose_gap",
                 "arguments": {
-                    "prompt": request.prompt,
-                    "mode": request.mode,
+                    "prompt": prompt_text,
+                    "mode": mode,
                     "current_scaffold_level": scaffold_level,
                 },
             }
@@ -64,7 +68,7 @@ class HermesAgentService:
             yield format_sse("tool_result", tool_result_payload)
 
         # 3. Event: Token Streaming (Simulated reply based on scaffolding ladder)
-        response_text = self._build_scaffold_reply(request.prompt, scaffold_level, request.mode)
+        response_text = self._build_scaffold_reply(prompt_text, scaffold_level, mode)
         words = response_text.split(" ")
         for i, word in enumerate(words):
             chunk = word + (" " if i < len(words) - 1 else "")
@@ -77,8 +81,8 @@ class HermesAgentService:
             "done",
             {
                 "status": "completed",
-                "user_id": str(request.user_id),
-                "mode": request.mode,
+                "user_id": user_id_str,
+                "mode": mode,
                 "scaffold_level": scaffold_level,
                 "processing_time_ms": elapsed_ms,
                 "model": "Hermes-Agent-v1-Stub",
@@ -89,24 +93,27 @@ class HermesAgentService:
         """Fallback non-streaming execution for batch or testing."""
         start_time = time.time()
         await asyncio.sleep(0.2)
-        reply = self._build_scaffold_reply(
-            request.prompt, request.context_window.scaffold_level, request.mode
-        )
+        scaffold_level = request.context_window.scaffold_level or 1
+        prompt_text = request.prompt or "Halo Ambis.in"
+        mode = request.mode or "ask"
+        user_id_str = str(request.user_id) if request.user_id else "anonymous"
+
+        reply = self._build_scaffold_reply(prompt_text, scaffold_level, mode)
         elapsed_ms = int((time.time() - start_time) * 1000)
 
         return HermesNonStreamResponse(
-            user_id=request.user_id,
+            user_id=user_id_str,
             reply=reply,
             tool_calls=[
                 {
                     "tool_name": "diagnose_gap",
                     "status": "success",
-                    "output": {"scaffold_level": request.context_window.scaffold_level},
+                    "output": {"scaffold_level": scaffold_level},
                 }
             ],
-            scaffold_level=request.context_window.scaffold_level,
+            scaffold_level=scaffold_level,
             processing_time_ms=elapsed_ms,
-            mode_used=request.mode,
+            mode_used=mode,
         )
 
     def _build_scaffold_reply(self, prompt: str, scaffold_level: int, mode: str) -> str:

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any
 from uuid import UUID
 
 
@@ -13,9 +13,9 @@ class HermesContextWindow(BaseModel):
 
 
 class HermesAgentRequest(BaseModel):
-    user_id: UUID
-    prompt: str = Field(..., min_length=1, max_length=5000)
-    mode: Literal["learning_path", "ask", "productivity_task"] = "ask"
+    user_id: Optional[UUID | str] = None
+    prompt: str = Field(default="", max_length=5000)
+    mode: str = Field(default="ask")
     context_window: HermesContextWindow = Field(default_factory=HermesContextWindow)
     tools_enabled: List[str] = Field(
         default_factory=lambda: [
@@ -30,12 +30,12 @@ class HermesAgentRequest(BaseModel):
 
 
 class HermesAgentSSEEvent(BaseModel):
-    event: Literal["thinking", "token", "tool_call", "tool_result", "error", "done"]
-    data: Dict[str, Any]
+    event: str = "token"
+    data: Dict[str, Any] = Field(default_factory=dict)
 
 
 class HermesNonStreamResponse(BaseModel):
-    user_id: UUID
+    user_id: Optional[str] = None
     reply: str
     tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
     scaffold_level: int = Field(default=1, ge=1, le=5)
