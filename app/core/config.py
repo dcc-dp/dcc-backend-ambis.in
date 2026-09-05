@@ -9,6 +9,12 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:root@127.0.0.1:5432/ambisin_db"
     redis_url: str = "redis://localhost:6379"
 
+    # Database Pool Settings (VPS 4 Core, 4 GB RAM Guardrails)
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_timeout: int = 30
+    db_pool_recycle: int = 1800
+
     # JWT & Auth
     secret_key: str = "ambis-in-secret-key-change-in-production-2024"
     algorithm: str = "HS256"
