@@ -14,9 +14,13 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
 
-    # AI Integration (future)
-    openai_api_key: str = ""
-    ai_model: str = "gpt-4o"
+    # AI Integration — 9router (OpenAI-compatible proxy), not Gemini.
+    # See Decisions/2026-09-15 - LLM provider adalah 9router, bukan Gemini (vault).
+    # Placeholders only — fill real values in .env, see .env.example.
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model_grading: str = "cc/PLACEHOLDER_MODEL"
+    llm_model_diagnosis: str = "cc/PLACEHOLDER_MODEL"
 
     model_config = SettingsConfigDict(
         env_file=".env",
