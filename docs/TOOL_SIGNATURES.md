@@ -122,7 +122,35 @@ await intervention_generator.generate(
   `misconceptions` row.
 - Same 2000-char guard on `student_answer` (when passed to the `hint` kind) as `Evaluator`/`Diagnostician`.
 
+## Wiring status
+
+`app/api/v1/services/hermes_agent.py` (+ new `app/tools/attempt_repository.py`,
+`app/api/deps.py`) now calls all five tools for real, end-to-end, for the "caller already
+knows `exercise_id`" case described below. **Note for Dayat**: this means `hermes_agent.py` —
+your chassis file — was modified out-of-band by Ooka for this task (same as every other
+build-order item, this crossed the Dayat/Ooka file boundary once, on request, rather than
+you having to do this wiring yourself). `app/api/v1/schemas/hermes.py` and
+`app/api/v1/routes/hermes.py` were rewritten too; `tests/test_hermes.py`'s old
+mock-contract tests were deleted and replaced by `tests/test_hermes_agent_service.py` +
+`tests/test_attempt_repository.py`.
+
+One behavior worth knowing before you build on top of this: **PolicyEngine.next_intervention()
+is only called when the attempt is wrong.** Its ladder is a mistake-count ladder (`mistake_count
+= len(attempts_for_problem)`, and every fixture in `tests/test_policy_engine.py` is
+`is_correct=False`) — on a correct answer there's nothing to remediate, so the pipeline skips
+Diagnostician, PolicyEngine, and InterventionGenerator entirely and goes straight from
+Evaluator to the `attempts` INSERT and StateManager.update(). `attempt_repository.load_attempt_history()`
+also filters to `is_correct=False` rows for the same reason — don't reuse it as a generic
+"all attempts" fetch.
+
 ## Not covered here (still open)
 
-- Wiring these five into `ask.py`/`hermes_agent.py` end-to-end — the actual next task once this doc is
-  read.
+- Intent/concept-mapping from free text, `CurriculumRetriever` vector search, `ExerciseSelector`,
+  `PathPlanner` — none of these tools exist yet. The current wiring requires the caller to already
+  supply `exercise_id` (or an existing `problem_id`); it cannot infer "what problem is this" from
+  a bare question.
+- `ask.py`/`AskService` (free-text Q&A) — untouched, out of scope for the wiring task.
+- `/sessions` / `/problems` CRUD routes — don't exist; the wiring auto-creates those rows inline
+  when the caller omits `session_id`/`problem_id`.
+- Live end-to-end smoke test against real Supabase + a filled-in 9router `.env` — flagged for a
+  manual check, not run as part of this task (same carve-out as every other build-order item).
