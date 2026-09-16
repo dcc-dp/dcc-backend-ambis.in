@@ -1,25 +1,30 @@
 # Hermes Tool Interfaces
 
-For Dayat's orchestration loop (`app/api/v1/services/hermes_agent.py`). These four tools live in
+For Dayat's orchestration loop (`app/api/v1/services/hermes_agent.py`). These five tools live in
 `app/tools/` and are what Hermes calls at each step of a student attempt — the chassis (agent loop,
 SSE streaming, session/turn management) is Dayat's; everything below the tool-call boundary is Ooka's.
 
-All four are implemented, unit-tested, and pushed to `main` as of `e0d560d`. None of them are wired
-into `ask.py`/`hermes_agent.py` yet — both are still full mocks. That wiring is the next step, and can
-start directly from the signatures below.
+All five are implemented and unit-tested (as of build-order item 4, on top of `da435ac`). None of them
+are wired into `ask.py`/`hermes_agent.py` yet — both are still full mocks. That wiring is the next step,
+and can start directly from the signatures below.
 
 ## Expected call order per student attempt
 
 ```
 Evaluator.evaluate()
-    -> Diagnostician.diagnose()   (only if the attempt was wrong)
+    -> Diagnostician.diagnose()          (only if the attempt was wrong)
     -> PolicyEngine.next_intervention()
+    -> InterventionGenerator.generate()  (only if PolicyEngine returned one of the 4 content kinds
+                                           below — "difficulty_up" etc. have no text to generate here)
     -> StateManager.update()
 ```
 
 `Evaluator` and `Diagnostician` never see each other's output — both take the same
 `(exercise, student_answer)` pair independently. `PolicyEngine` is pure (no DB/LLM) and only needs the
-attempt history for the *current problem*. `StateManager` is the only one that writes anything.
+attempt history for the *current problem*. `InterventionGenerator` takes `PolicyEngine`'s decision
+directly and turns it into student-facing text. `StateManager` is the only one that writes anything —
+call it last, after content generation, so a slow/failed LLM call for the intervention text doesn't
+block the mastery-state write.
 
 ## 1. `Evaluator` — grading (`app/tools/evaluator.py`)
 
@@ -88,9 +93,36 @@ await state_manager.update(
 - Updates EWMA mastery, confidence, correct streak, and bumps `misconception_counts` in one statement.
 - Commits internally — call this last, after grading/diagnosis/policy are all resolved for the attempt.
 
+## 5. `InterventionGenerator` — student-facing text (`app/tools/intervention_generator.py`)
+
+```python
+InterventionGenerator(db: AsyncSession, llm_client: LLMClient)
+
+await intervention_generator.generate(
+    exercise: Exercise,
+    decision: PolicyDecision,               # straight from PolicyEngine.next_intervention()
+    student_answer: str | None = None,      # optional extra grounding, "hint" kind only
+    misconception_code: str | None = None,  # required when decision.kind == "explanation"
+) -> InterventionContent
+# InterventionContent(text: str)  -- matches interventions.content -> {"text": "..."}
+```
+
+- Dispatches on `decision.kind`; only handles the four kinds `PolicyEngine` can return
+  (`guiding_question` / `hint` / `explanation` / `worked_example`) — raises `ValueError` for any other
+  kind (e.g. the Learning Path kinds `easier_exercise`/`prerequisite_review`/`difficulty_up`, which have
+  no text-generation step here).
+- One LLM call per invocation via the intervention prompt suite (`prompts/intervention_*.j2`), SMP-VII
+  tone, same `LLMResponseError` contract as `Evaluator`/`Diagnostician`.
+- **Never reveals the final answer**, at any rung — enforced in the system prompt and, for
+  `worked_example`, structurally: only `exercise.solution_steps[:-1]` is ever sent to the LLM, since by
+  seed-data convention the last step states the literal answer.
+- `explanation` looks up the misconception's `description`/`remediation_hint` plus a plain
+  `concept_id`-scoped `curriculum_chunks` row (not vector search — real top-k RAG is item 5, only needed
+  once Learning Path starts); raises `ValueError` if `misconception_code` doesn't resolve to a
+  `misconceptions` row.
+- Same 2000-char guard on `student_answer` (when passed to the `hint` kind) as `Evaluator`/`Diagnostician`.
+
 ## Not covered here (still open)
 
-- Intervention *content* prompts (hint/guiding_question/explanation/worked_example text generation) —
-  build-order item 4, not started.
-- Wiring these four into `ask.py`/`hermes_agent.py` end-to-end — the actual next task once this doc is
+- Wiring these five into `ask.py`/`hermes_agent.py` end-to-end — the actual next task once this doc is
   read.

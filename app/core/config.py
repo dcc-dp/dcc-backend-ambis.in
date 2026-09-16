@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model_grading: str = "cc/PLACEHOLDER_MODEL"
     llm_model_diagnosis: str = "cc/PLACEHOLDER_MODEL"
+    llm_model_intervention: str = "cc/PLACEHOLDER_MODEL"
 
     # Embeddings — same 9router instance/credentials as above (llm_base_url/llm_api_key),
     # just a different endpoint (/embeddings) and model. Confirmed working via direct
