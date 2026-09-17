@@ -80,7 +80,45 @@ class LLMClient:
             await asyncio.sleep(_BASE_BACKOFF_SECONDS * (2**attempt))
 
         assert response is not None  # loop always raises or breaks with a response
-        return response.json()
+        content_type = response.headers.get("content-type", "")
+        text = response.text
+        if "text/event-stream" in content_type or text.lstrip().startswith("data:"):
+            # Handle unexpected SSE stream gracefully by aggregating chunks
+            aggregated_content = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(data_str)
+                    choices = chunk.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        if "content" in delta and delta["content"]:
+                            aggregated_content.append(delta["content"])
+                        msg = choices[0].get("message", {})
+                        if "content" in msg and msg["content"]:
+                            aggregated_content.append(msg["content"])
+                except json.JSONDecodeError:
+                    continue
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "".join(aggregated_content),
+                        }
+                    }
+                ]
+            }
+
+        try:
+            return response.json()
+        except json.JSONDecodeError as exc:
+            raise LLMResponseError(f"9router returned invalid JSON: {exc}") from exc
 
     async def complete_json(self, model: str, system_prompt: str, user_prompt: str) -> dict:
         """POST {base_url}/chat/completions with response_format=json_object,
@@ -89,6 +127,8 @@ class LLMClient:
         response_format only guarantees the reply IS JSON, not its shape —
         callers must still validate the keys/values they expect.
         """
+        import re
+
         payload = {
             "model": model,
             "messages": [
@@ -96,14 +136,31 @@ class LLMClient:
                 {"role": "user", "content": user_prompt},
             ],
             "response_format": {"type": "json_object"},
+            "stream": False,
         }
         body = await self._post_with_retry("/chat/completions", payload)
 
+        content = ""
         try:
             content = body["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-            raise LLMResponseError(f"9router response was not the expected JSON shape: {exc}") from exc
+            cleaned = content.strip()
+            # Strip markdown fences e.g. ```json ... ``` or ``` ... ```
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"\s*```$", "", cleaned)
+            parsed = json.loads(cleaned, strict=False)
+        except (KeyError, IndexError, TypeError):
+            raise LLMResponseError(f"9router response was not the expected format: {body!r}")
+        except json.JSONDecodeError as exc:
+            # Fallback: try to extract JSON object substring {...}
+            match = re.search(r"\{.*\}", content, flags=re.DOTALL)
+            if match:
+                try:
+                    parsed = json.loads(match.group(0), strict=False)
+                except json.JSONDecodeError:
+                    raise LLMResponseError(f"9router response was not valid JSON: {exc}") from exc
+            else:
+                raise LLMResponseError(f"9router response was not valid JSON: {exc}") from exc
 
         if not isinstance(parsed, dict):
             raise LLMResponseError(f"9router JSON content was not an object: {parsed!r}")

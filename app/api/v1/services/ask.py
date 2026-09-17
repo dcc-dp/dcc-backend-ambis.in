@@ -1,5 +1,8 @@
+import logging
 import time
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 from app.api.deps import get_llm_client
 from app.api.v1.schemas.ask import AskRequest, AskResponse
@@ -39,6 +42,7 @@ class AskService:
             )
             answer = res.get("answer") or str(res)
         except Exception as exc:
+            logger.exception("AskService error calling LLM: %s", exc)
             answer = (
                 f"Halo! Kak Ambis mendengar pertanyaanmu: '{request.question}'. "
                 "Tapi saat ini ada sedikit kendala koneksi ke server AI. Coba tanyakan sekali lagi ya!"
