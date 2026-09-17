@@ -1,6 +1,6 @@
 from typing import Any, Optional
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class CurriculumBaseSchema(BaseModel):
@@ -39,9 +39,9 @@ class ExerciseResponse(CurriculumBaseSchema):
     options: Optional[Any] = None
     correct_answer: str
     solution_steps: Optional[Any] = None
-    # metadata_ maps to ORM column metadata_ while serializing as 'metadata' in JSON
-    metadata_: dict[str, Any] = Field(
+    # AliasChoices with metadata_ first ensures SQLAlchemy ORM's metadata_ is chosen over MetaData()
+    metadata: dict[str, Any] = Field(
         default_factory=dict,
-        alias="metadata_",
+        validation_alias=AliasChoices("metadata_", "metadata"),
         serialization_alias="metadata",
     )
