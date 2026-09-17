@@ -52,3 +52,5 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+seedss.sql

@@ -63,7 +63,7 @@ _UPSERT_SQL = """
          correct_streak, misconception_counts, last_seen_at)
     VALUES
         (:student_id, :concept_id, :initial_mastery, :initial_confidence, 1,
-         :initial_streak, :initial_counts::jsonb, now())
+         :initial_streak, CAST(:initial_counts AS jsonb), now())
     ON CONFLICT (student_id, concept_id) DO UPDATE SET
         mastery = student_concept_state.mastery
             + :alpha * (:score - student_concept_state.mastery),
@@ -74,12 +74,12 @@ _UPSERT_SQL = """
             ELSE 0
         END,
         misconception_counts = CASE
-            WHEN :misconception_code IS NOT NULL THEN jsonb_set(
+            WHEN CAST(:misconception_code AS text) IS NOT NULL THEN jsonb_set(
                 student_concept_state.misconception_counts,
-                array[:misconception_code],
+                array[CAST(:misconception_code AS text)],
                 to_jsonb(
                     COALESCE(
-                        (student_concept_state.misconception_counts ->> :misconception_code)::int,
+                        CAST(student_concept_state.misconception_counts ->> CAST(:misconception_code AS text) AS int),
                         0
                     ) + 1
                 ),

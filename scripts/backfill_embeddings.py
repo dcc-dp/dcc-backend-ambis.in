@@ -27,7 +27,7 @@ from app.core.database import async_session_factory
 from app.core.llm_client import LLMClient
 
 _SELECT_SQL = "SELECT id, content FROM curriculum_chunks WHERE embedding IS NULL ORDER BY id"
-_UPDATE_SQL = "UPDATE curriculum_chunks SET embedding = :embedding::vector WHERE id = :id"
+_UPDATE_SQL = "UPDATE curriculum_chunks SET embedding = CAST(:embedding AS vector) WHERE id = :id"
 
 
 def _to_pgvector_literal(vector: list[float]) -> str:
