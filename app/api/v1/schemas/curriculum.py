@@ -1,10 +1,10 @@
 from typing import Any, Optional
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, Field, AliasChoices
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CurriculumBaseSchema(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class SubjectResponse(CurriculumBaseSchema):
@@ -39,7 +39,9 @@ class ExerciseResponse(CurriculumBaseSchema):
     options: Optional[Any] = None
     correct_answer: str
     solution_steps: Optional[Any] = None
-    metadata: dict[str, Any] = Field(
+    # metadata_ maps to ORM column metadata_ while serializing as 'metadata' in JSON
+    metadata_: dict[str, Any] = Field(
         default_factory=dict,
-        validation_alias=AliasChoices("metadata", "metadata_"),
+        alias="metadata_",
+        serialization_alias="metadata",
     )
