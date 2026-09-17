@@ -4,6 +4,7 @@ from app.core.config import settings
 from app.api.v1.routes.health import router as health_router
 from app.api.v1.routes.learning_path import router as learning_path_router
 from app.api.v1.routes.ask import router as ask_router
+from app.api.v1.routes.curriculum import router as curriculum_router
 
 # Hermes Agent route is prepared as baseline stub for upcoming sprint
 try:
@@ -31,6 +32,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router, prefix=settings.api_v1_prefix)
     app.include_router(learning_path_router, prefix=settings.api_v1_prefix)
+    app.include_router(curriculum_router, prefix=settings.api_v1_prefix)
     app.include_router(ask_router, prefix=settings.api_v1_prefix)
     if hermes_router:
         app.include_router(hermes_router, prefix=settings.api_v1_prefix)
