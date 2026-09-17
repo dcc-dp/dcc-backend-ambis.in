@@ -6,6 +6,7 @@ logger = logging.getLogger(__name__)
 
 from app.api.deps import get_llm_client
 from app.api.v1.schemas.ask import AskRequest, AskResponse
+from app.api.v1.services.retriever import CurriculumRetriever
 from app.core.config import settings
 from app.core.llm_client import LLMClient
 
@@ -53,9 +54,17 @@ class AskService:
     async def process(self, request: AskRequest) -> AskResponse:
         start = time.time()
 
+        # RAG: Retrieve relevant curriculum context from PostgreSQL pgvector
+        retriever = CurriculumRetriever(self.db, self.llm_client)
+        chunks = await retriever.search(request.question, top_k=2, threshold=0.70)
+        references = [c.content for c in chunks]
+
         user_prompt = f"Pertanyaan siswa: {request.question}"
         if request.context:
             user_prompt += f"\nKonteks materi: {request.context}"
+        if chunks:
+            curriculum_snippets = "\n".join(f"- {c.content}" for c in chunks)
+            user_prompt += f"\nReferensi materi kurikulum resmi Ambis.in:\n{curriculum_snippets}"
 
         try:
             res = await self.llm_client.complete_json(
@@ -75,7 +84,7 @@ class AskService:
 
         return AskResponse(
             answer=answer,
-            references=[],
+            references=references,
             processing_time_ms=elapsed_ms,
             mode_used=request.mode,
         )
