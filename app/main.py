@@ -5,6 +5,8 @@ from app.api.v1.routes.health import router as health_router
 from app.api.v1.routes.learning_path import router as learning_path_router
 from app.api.v1.routes.ask import router as ask_router
 from app.api.v1.routes.curriculum import router as curriculum_router
+from app.api.v1.routes.models import router as models_router
+from app.api.v1.routes.chat import router as chat_router
 
 # Hermes Agent route is prepared as baseline stub for upcoming sprint
 try:
@@ -16,8 +18,8 @@ except (ImportError, Exception):
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
-        description="Ambis.in Backend API - Learning Path & Ask Mode",
-        version="0.1.0",
+        description="Ambis.in Backend API - Learning Path & Ask Mode with Multi-AI",
+        version="0.2.0",
         docs_url="/docs",
         redoc_url="/redoc",
     )
@@ -34,12 +36,14 @@ def create_app() -> FastAPI:
     app.include_router(learning_path_router, prefix=settings.api_v1_prefix)
     app.include_router(curriculum_router, prefix=settings.api_v1_prefix)
     app.include_router(ask_router, prefix=settings.api_v1_prefix)
+    app.include_router(models_router, prefix=settings.api_v1_prefix)
+    app.include_router(chat_router, prefix=settings.api_v1_prefix)
     if hermes_router:
         app.include_router(hermes_router, prefix=settings.api_v1_prefix)
 
     @app.get("/")
     async def root():
-        return {"message": "ambis.in API", "docs": "/docs"}
+        return {"message": "ambis.in API v0.2.0 - Multi-AI enabled", "docs": "/docs"}
 
     return app
 

@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+﻿from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -14,22 +14,21 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
 
-    # AI Integration — 9router (OpenAI-compatible proxy), not Gemini.
-    # See Decisions/2026-09-15 - LLM provider adalah 9router, bukan Gemini (vault).
-    # Placeholders only — fill real values in .env, see .env.example.
+    # Legacy LLM proxy (9router) - kept for embeddings only
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model_grading: str = "cc/PLACEHOLDER_MODEL"
     llm_model_diagnosis: str = "cc/PLACEHOLDER_MODEL"
     llm_model_intervention: str = "cc/PLACEHOLDER_MODEL"
 
-    # Embeddings — same 9router instance/credentials as above (llm_base_url/llm_api_key),
-    # just a different endpoint (/embeddings) and model. Confirmed working via direct
-    # testing: gemini-embedding-001, truncated to 768 dims via the `dimensions` param to
-    # match curriculum_chunks.embedding's vector(768) column with no migration needed.
-    # See Decisions/2026-09-16 - Embedding model gemini-embedding-001 via 9router (vault).
+    # Embeddings
     embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 768
+
+    # Multi-AI Provider Keys
+    gemini_api_key: str = ""
+    groq_api_key: str = ""
+    openrouter_api_key: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,18 +1,20 @@
-import logging
+﻿import logging
 import time
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
-from app.api.deps import get_llm_client
 from app.api.v1.schemas.ask import AskRequest, AskResponse
+from app.api.v1.services.multi_ai import MultiAIClient, DEFAULT_MODEL_ID, get_multi_ai_client
 from app.api.v1.services.retriever import CurriculumRetriever
 from app.core.config import settings
-from app.core.llm_client import LLMClient
+
+# Keep legacy LLM client for embeddings (retriever)
+from app.api.deps import get_llm_client
 
 KAK_AMBIS_SYSTEM_PROMPT = """Kamu adalah 'Kak Ambis', asisten belajar dan tutor AI interaktif yang ramah, asyik, cerdas, dan adaptif untuk siswa SMP hingga SMA di Indonesia.
 
-🎯 FILOSOFI & GAYA ADAPTIF (Target: Siswa SMP - SMA):
+📚 FILOSOFI & GAYA ADAPTIF (Target: Siswa SMP - SMA):
 Siswa remaja seringkali malas membaca penjelasan yang terlalu panjang, kaku, atau bertele-tele. Kamu harus CERDAS MEMBACA SITUASI dan menyesuaikan gaya jawaban dengan kebutuhan siswa:
 
 1. BACA SITUASI & JENIS PERTANYAAN:
@@ -47,17 +49,29 @@ WAJIB keluarkan format output berupa JSON object valid dengan satu key 'answer':
 
 
 class AskService:
-    def __init__(self, db: AsyncSession, llm_client: LLMClient | None = None):
+    def __init__(
+        self,
+        db: AsyncSession,
+        multi_ai_client: MultiAIClient | None = None,
+    ):
         self.db = db
-        self.llm_client = llm_client or get_llm_client()
+        self.multi_ai_client = multi_ai_client or get_multi_ai_client()
+        # Legacy client for embeddings (retriever)
+        self._llm_client = get_llm_client()
 
     async def process(self, request: AskRequest) -> AskResponse:
         start = time.time()
+        model_id = request.model_id or DEFAULT_MODEL_ID
 
         # RAG: Retrieve relevant curriculum context from PostgreSQL pgvector
-        retriever = CurriculumRetriever(self.db, self.llm_client)
-        chunks = await retriever.search(request.question, top_k=2, threshold=0.70)
-        references = [c.content for c in chunks]
+        references: list[str] = []
+        try:
+            retriever = CurriculumRetriever(self.db, self._llm_client)
+            chunks = await retriever.search(request.question, top_k=2, threshold=0.70)
+            references = [c.content for c in chunks]
+        except Exception as exc:
+            logger.warning("RAG retrieval failed (non-critical): %s", exc)
+            chunks = []
 
         user_prompt = f"Pertanyaan siswa: {request.question}"
         if request.context:
@@ -67,17 +81,18 @@ class AskService:
             user_prompt += f"\nReferensi materi kurikulum resmi Ambis.in:\n{curriculum_snippets}"
 
         try:
-            res = await self.llm_client.complete_json(
-                model=settings.llm_model_grading,
+            res = await self.multi_ai_client.complete_json(
+                model_id=model_id,
                 system_prompt=KAK_AMBIS_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
             )
             answer = res.get("answer") or str(res)
         except Exception as exc:
-            logger.exception("AskService error calling LLM: %s", exc)
+            logger.exception("AskService error calling AI (model=%s): %s", model_id, exc)
             answer = (
                 f"Halo! Kak Ambis mendengar pertanyaanmu: '{request.question}'. "
-                "Tapi saat ini ada sedikit kendala koneksi ke server AI. Coba tanyakan sekali lagi ya!"
+                f"Tapi saat ini ada sedikit kendala koneksi ke model AI ({model_id}). "
+                "Coba tanyakan sekali lagi atau pilih model yang lain ya!"
             )
 
         elapsed_ms = int((time.time() - start) * 1000)
@@ -87,4 +102,5 @@ class AskService:
             references=references,
             processing_time_ms=elapsed_ms,
             mode_used=request.mode,
+            model_used=model_id,
         )
