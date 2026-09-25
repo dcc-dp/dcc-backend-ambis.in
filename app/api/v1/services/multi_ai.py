@@ -25,89 +25,27 @@ logger = logging.getLogger(__name__)
 # Model Registry - daftar model yang tersedia (verified working)
 # ---------------------------------------------------------------------------
 AVAILABLE_MODELS = [
-    # --- Groq ---
     {
-        "id": "groq/groq/compound",
-        "name": "Compound (Groq)",
-        "provider": "groq",
-        "provider_label": "Groq",
-        "description": "Model flagship Groq, powerful & versatile",
+        "id": "gemini/gemini-3.5-flash-lite",
+        "name": "Kak Ambis AI",
+        "provider": "9router",
+        "provider_label": "9router Gateway",
+        "description": "Model tutor adaptif cerdas & cepat via gateway 9router",
         "is_free": True,
         "icon": "⚡",
-    },
-    {
-        "id": "groq/groq/compound-mini",
-        "name": "Compound Mini (Groq)",
-        "provider": "groq",
-        "provider_label": "Groq",
-        "description": "Versi ringkas Compound - lebih cepat",
-        "is_free": True,
-        "icon": "⚡",
-    },
-    {
-        "id": "groq/openai/gpt-oss-20b",
-        "name": "GPT-OSS 20B (Groq)",
-        "provider": "groq",
-        "provider_label": "Groq",
-        "description": "OpenAI OSS 20B berjalan di Groq",
-        "is_free": True,
-        "icon": "⚡",
-    },
-    {
-        "id": "groq/qwen/qwen3.8-27b",
-        "name": "Qwen 3.8 27B (Groq)",
-        "provider": "groq",
-        "provider_label": "Groq",
-        "description": "Alibaba Qwen 27B - pintar & akurat",
-        "is_free": True,
-        "icon": "⚡",
-    },
-    # --- Google Gemini ---
-    {
-        "id": "gemini/gemini-3.6-flash",
-        "name": "Gemini 3.6 Flash",
-        "provider": "google",
-        "provider_label": "Google Gemini",
-        "description": "Model terbaru Google, cepat & canggih",
-        "is_free": True,
-        "icon": "🔵",
-    },
-    # --- OpenRouter ---
-    {
-        "id": "openrouter/deepseek/deepseek-v4-flash-0731:free",
-        "name": "DeepSeek V4 Flash",
-        "provider": "openrouter",
-        "provider_label": "OpenRouter",
-        "description": "DeepSeek V4 Flash gratis via OpenRouter",
-        "is_free": True,
-        "icon": "🌐",
-    },
-    {
-        "id": "openrouter/nvidia/nemotron-3.5-lightning:free",
-        "name": "Nemotron 3.5 Lightning",
-        "provider": "openrouter",
-        "provider_label": "OpenRouter",
-        "description": "NVIDIA Nemotron gratis via OpenRouter",
-        "is_free": True,
-        "icon": "🌐",
     },
 ]
 
-DEFAULT_MODEL_ID = "groq/groq/compound"
+DEFAULT_MODEL_ID = "gemini/gemini-3.5-flash-lite"
 
 
 def _parse_provider(model_id: str) -> tuple[str, str]:
-    """
-    Parse provider dari model_id.
-    Format: 'provider/model-name' atau 'provider/org/model-name'
-    Contoh:
-      'groq/groq/compound'         -> ('groq', 'groq/compound')
-      'gemini/gemini-3.6-flash'    -> ('gemini', 'gemini-3.6-flash')
-      'openrouter/deepseek/...'    -> ('openrouter', 'deepseek/...')
-    """
+    """Parse provider dari model_id."""
+    if not model_id:
+        return "9router", DEFAULT_MODEL_ID
     parts = model_id.split("/", 1)
-    if len(parts) != 2:
-        raise ValueError(f"Invalid model_id format: {model_id!r}. Expected 'provider/model-name'")
+    if len(parts) == 1:
+        return "9router", parts[0]
     return parts[0], parts[1]
 
 
@@ -347,12 +285,82 @@ async def _stream_openrouter(
 
 
 # ---------------------------------------------------------------------------
+# 9router Gateway Provider (OpenAI-compatible)
+# ---------------------------------------------------------------------------
+async def _complete_9router(model_name: str, system_prompt: str, user_prompt: str) -> str:
+    """Call 9router via OpenAI-compatible REST API."""
+    url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "stream": False,
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.llm_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"Unexpected 9router response format: {data}") from e
+
+
+async def _stream_9router(
+    model_name: str, system_prompt: str, user_prompt: str
+) -> AsyncGenerator[str, None]:
+    """Stream 9router via OpenAI-compatible /chat/completions?stream=true."""
+    url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "stream": True,
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.llm_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        async with client.stream("POST", url, json=payload, headers=headers) as response:
+            response.raise_for_status()
+            async for raw_line in response.aiter_lines():
+                line = raw_line.strip()
+                if not line or line == "[DONE]":
+                    continue
+                if line.startswith("data: "):
+                    try:
+                        chunk_obj = json.loads(line[len("data: "):])
+                    except json.JSONDecodeError:
+                        continue
+                    delta = chunk_obj.get("choices", [{}])[0].get("delta", {})
+                    text = delta.get("content")
+                    if text:
+                        yield text
+
+
+# ---------------------------------------------------------------------------
 # MultiAIClient - unified interface
 # ---------------------------------------------------------------------------
 class MultiAIClient:
     """
     Unified multi-provider AI client.
-    Supports: gemini/*, groq/*, openrouter/*
+    Routes via 9router when LLM_BASE_URL is configured, or direct providers.
     """
 
     async def complete(
@@ -361,9 +369,13 @@ class MultiAIClient:
         system_prompt: str,
         user_prompt: str,
     ) -> str:
-        """Call the selected provider and return raw text response."""
-        provider, model_name = _parse_provider(model_id)
+        """Call the selected provider or 9router gateway."""
+        if settings.llm_base_url and settings.llm_api_key:
+            target_model = model_id or settings.llm_model_intervention or DEFAULT_MODEL_ID
+            logger.info("MultiAIClient: routing via 9router model=%s", target_model)
+            return await _complete_9router(target_model, system_prompt, user_prompt)
 
+        provider, model_name = _parse_provider(model_id)
         logger.info("MultiAIClient: calling provider=%s model=%s", provider, model_name)
 
         if provider == "gemini":
@@ -374,7 +386,7 @@ class MultiAIClient:
             return await _complete_openrouter(model_name, system_prompt, user_prompt)
         else:
             raise ValueError(
-                f"Unknown provider: {provider!r}. Supported: gemini, groq, openrouter"
+                f"Unknown provider: {provider!r}. Supported: gemini, groq, openrouter, 9router"
             )
 
     async def complete_json(
@@ -414,11 +426,18 @@ class MultiAIClient:
         system_prompt: str,
         user_prompt: str,
     ) -> AsyncGenerator[str, None]:
-        """Stream response from the selected provider, yield each text chunk.
+        """Stream response from 9router gateway or legacy direct providers."""
+        if settings.llm_base_url and settings.llm_api_key:
+            target_model = model_id or settings.llm_model_intervention or DEFAULT_MODEL_ID
+            logger.info(
+                "MultiAIClient.stream_text: routing via 9router model=%s", target_model
+            )
+            async for chunk in _stream_9router(
+                target_model, system_prompt, user_prompt
+            ):
+                yield chunk
+            return
 
-        Gemini uses raw SSE lines; Groq & OpenRouter use OpenAI-format SSE
-        (data: {...}) — both are normalized to plain text chunks here.
-        """
         provider, model_name = _parse_provider(model_id)
 
         logger.info(
@@ -442,7 +461,7 @@ class MultiAIClient:
                 yield chunk
         else:
             raise ValueError(
-                f"Unknown provider: {provider!r}. Supported: gemini, groq, openrouter"
+                f"Unknown provider: {provider!r}. Supported: gemini, groq, openrouter, 9router"
             )
 
 
