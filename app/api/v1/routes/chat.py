@@ -28,6 +28,14 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+class StudentContext(BaseModel):
+    goal: str | None = None
+    topic: str | None = None
+    subtopic: str | None = None
+    difficulty: str | None = None
+    previous_sessions: list[str] | None = None
+
+
 class ChatMessage(BaseModel):
     role: str
     content: str
@@ -37,6 +45,7 @@ class ChatStreamRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
     prompt: str = Field(..., min_length=1, max_length=10000)
     messages: list[ChatMessage] | None = None
+    student_context: StudentContext | None = None
     model_id: str = Field(default=DEFAULT_MODEL_ID)
     system_prompt: str | None = None
     stream: bool = True
@@ -44,10 +53,32 @@ class ChatStreamRequest(BaseModel):
 
 @router.post("/stream")
 async def chat_stream(request: ChatStreamRequest):
-    """Chat dengan streaming SSE (default) atau non-streaming JSON (mendukung multi-turn chat)."""
+    """Chat dengan streaming SSE (default) atau non-streaming JSON (mendukung memori 1 sesi penuh & memori jangka panjang)."""
     system_prompt = request.system_prompt or DEFAULT_SYSTEM_PROMPT
 
-    # Build conversation messages payload
+    # Inject long-term student memory and cross-session context if provided
+    if request.student_context:
+        ctx = request.student_context
+        memories = ["\n[MEMORI JANGKA PANJANG & PROFIL BELAJAR SISWA]"]
+        if ctx.goal:
+            memories.append(f"- Target Belajar: {ctx.goal}")
+        if ctx.topic or ctx.subtopic:
+            memories.append(f"- Minat Materi: {ctx.topic} {f'({ctx.subtopic})' if ctx.subtopic else ''}")
+        if ctx.difficulty:
+            memories.append(f"- Tingkat Pemahaman: {ctx.difficulty}")
+        if ctx.previous_sessions:
+            memories.append("- Riwayat Sesi Percakapan Sebelumnya:")
+            for s in ctx.previous_sessions:
+                memories.append(f"  * {s}")
+        memories.append(
+            "- PANDUAN MEMORI PERSONAL: Kamu mengingat profil dan topik-topik yang pernah dipelajari siswa ini sebelumnya. "
+            "Jika siswa membuat percakapan baru atau menyinggung materi terdahulu, tunjukkan pemahamanmu secara hangat "
+            "(misal: 'Senang ketemu lagi! Terakhir kamu sudah belajar aljabar, sekarang mau lanjut lagi ya?'). "
+            "Pahami sejauh mana perkembangan belajarnya!"
+        )
+        system_prompt += "\n" + "\n".join(memories)
+
+    # Build conversation messages payload for full current session
     history_messages: list[dict[str, str]] = [
         {"role": "system", "content": system_prompt}
     ]
