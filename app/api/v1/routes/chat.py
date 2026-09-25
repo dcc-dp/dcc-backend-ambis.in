@@ -123,11 +123,13 @@ async def chat_stream(
     db_memory = await memory_service.get_memory(student_id)
 
     # Tentukan nama dan identitas siswa (prioritas: deteksi baru > payload request > DB tersimpan)
-    student_name = (
+    raw_name = (
         extracted.get("name")
         or (request.student_context and request.student_context.name)
         or db_memory.get("name")
     )
+    student_name = raw_name if (raw_name and StudentMemoryService._is_valid_name(raw_name)) else None
+
     student_grade = (
         extracted.get("grade")
         or (request.student_context and request.student_context.grade)
@@ -153,9 +155,13 @@ async def chat_stream(
         memories.append(f"- NAMA PANGGILAN RESMI SISWA: {student_name}")
         memories.append("- ATURAN MUTLAK IDENTITAS SISWA:")
         memories.append(f"  * Siswa ini BERNAMA '{student_name}'. Kamu SUDAH MENGENAL siswa ini.")
+        memories.append(f"  * Jika siswa bertanya 'siapa namaku?', 'namaku siapa?', 'kamu ingat namaku?', atau sejenisnya, JAWAB LANGSUNG DENGAN YAKIN: 'Nama kamu adalah {student_name}! Kak Ambis pasti ingat dong.'")
         memories.append("  * DILARANG KERAS bertanya 'siapa namamu?', meminta siswa memperkenalkan diri lagi, atau bersikap seperti orang asing yang baru pertama kali kenal!")
         memories.append(f"  * Sapalah siswa secara akrab, hangat, dan sebut namanya (misal: 'Halo {student_name}!', 'Hai {student_name}!').")
         memories.append("  * Pertahankan rasa keakraban antar-sesi seolah kamu adalah kakak kelas yang selalu mendampinginya.")
+    else:
+        memories.append("- STATUS IDENTITAS: Siswa belum memberitahukan namanya.")
+        memories.append("  * Jika siswa bertanya 'siapa namaku?' atau 'namaku siapa?', jawab dengan santai dan ramah bahwa kamu belum tahu namanya dan persilakan dia berkenalan.")
 
     if student_grade:
         memories.append(f"- Jenjang/Kelas Siswa: {student_grade}")
@@ -233,10 +239,12 @@ async def chat_stream(
             f"data: {json.dumps({'status': 'memulai...', 'model': request.model_id}, ensure_ascii=False)}\n\n"
         )
 
-        if student_name or student_grade:
+        valid_name = student_name if (student_name and StudentMemoryService._is_valid_name(student_name)) else None
+
+        if valid_name or student_grade:
             yield (
                 f"event: memory\n"
-                f"data: {json.dumps({'student_id': student_id, 'name': student_name, 'grade': student_grade}, ensure_ascii=False)}\n\n"
+                f"data: {json.dumps({'student_id': student_id, 'name': valid_name, 'grade': student_grade}, ensure_ascii=False)}\n\n"
             )
 
         try:
@@ -261,7 +269,7 @@ async def chat_stream(
         elapsed_ms = int((time.time() - start) * 1000)
         yield (
             f"event: done\n"
-            f"data: {json.dumps({'model_used': request.model_id, 'processing_time_ms': elapsed_ms, 'total_chars': total_chars, 'student_name': student_name}, ensure_ascii=False)}\n\n"
+            f"data: {json.dumps({'model_used': request.model_id, 'processing_time_ms': elapsed_ms, 'total_chars': total_chars, 'student_name': valid_name}, ensure_ascii=False)}\n\n"
         )
 
     return StreamingResponse(

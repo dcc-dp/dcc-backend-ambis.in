@@ -86,9 +86,13 @@ class StudentMemoryService:
                         facts = json.loads(facts)
                     except Exception:
                         facts = []
+                stored_name = row["name"]
+                if stored_name and not self._is_valid_name(stored_name):
+                    stored_name = None
+
                 return {
                     "student_id": str(row["student_id"]),
-                    "name": row["name"],
+                    "name": stored_name,
                     "grade": row["grade"],
                     "goal": row["goal"],
                     "topic": row["topic"],
@@ -108,8 +112,7 @@ class StudentMemoryService:
             prow = res.mappings().first()
             if prow:
                 dname = prow.get("display_name")
-                # Ignore placeholder default names like 'Siswa Demo'
-                name = dname if dname and dname.lower() != "siswa demo" else None
+                name = dname if (dname and self._is_valid_name(dname)) else None
                 return {
                     "student_id": str(prow["id"]),
                     "name": name,
@@ -151,7 +154,11 @@ class StudentMemoryService:
         clean_name = self._sanitize_name(name) if name else None
 
         existing = await self.get_memory(valid_id)
+        # Do not overwrite a valid existing name with None unless explicitly provided
         final_name = clean_name or existing.get("name")
+        if final_name and not self._is_valid_name(final_name):
+            final_name = None
+
         final_grade = grade or existing.get("grade")
         final_goal = goal or existing.get("goal")
         final_topic = topic or existing.get("topic")
@@ -161,7 +168,7 @@ class StudentMemoryService:
         merged_facts = list(existing.get("facts") or [])
         if facts:
             for f in facts:
-                if f and f not in merged_facts:
+                if f and f not in merged_facts and "siapa" not in f.lower():
                     merged_facts.append(f)
 
         upsert_sql = text(
@@ -230,14 +237,20 @@ class StudentMemoryService:
 
     @classmethod
     def extract_identity_from_text(cls, text: str) -> dict[str, Any]:
-        """Detect if the user is introducing their name or grade."""
+        """Detect if the user is introducing their name or grade.
+        NEVER extract a name if the sentence is a question (e.g. 'namaku siapa?', 'siapa namaku?').
+        """
+        # If the text is asking a question about identity, DO NOT extract a name!
+        if cls.is_question_about_name(text):
+            return {}
+
         result: dict[str, Any] = {}
         for pattern in NAME_PATTERNS:
             match = pattern.search(text)
             if match:
                 raw_name = match.group(1).strip()
                 cleaned = cls._sanitize_name(raw_name)
-                if cleaned:
+                if cleaned and cls._is_valid_name(cleaned):
                     result["name"] = cleaned
                     break
 
@@ -250,12 +263,48 @@ class StudentMemoryService:
 
         return result
 
-    @staticmethod
-    def _sanitize_name(name: str | None) -> str | None:
+    @classmethod
+    def is_question_about_name(cls, text: str) -> bool:
+        """Check if message is asking a question testing name memory rather than introducing."""
+        t = text.lower().strip()
+        # If there's a question mark and words related to identity/knowing/remembering
+        if "?" in t:
+            return True
+        question_words = ["siapa", "siapakah", "apakah", "ingat", "tau", "tahu", "lupa", "tebak"]
+        for qw in question_words:
+            if qw in t.split():
+                return True
+        return False
+
+    @classmethod
+    def _is_valid_name(cls, name: str | None) -> bool:
+        if not name:
+            return False
+        cleaned = re.sub(r"[.,!?;:]", "", name).strip().lower()
+        disallowed = {
+            "siapa", "siapakah", "apa", "apakah", "mana", "dimana", "kenapa", "mengapa",
+            "kamu", "anda", "engkau", "kau", "dia", "mereka", "kita", "kami",
+            "aku", "saya", "gue", "gw", "lu", "lo", "kakak", "kak", "om", "tante",
+            "tutor", "guru", "siswa", "murid", "pelajar", "teman",
+            "tahu", "tau", "ingat", "lupa", "bukan", "tidak", "bisa", "mau",
+            "siswa demo", "anonim", "user", "admin", "null", "undefined",
+        }
+        if cleaned in disallowed:
+            return False
+        # If any word inside is a question word
+        for bad in {"siapa", "siapakah", "apakah", "tahu", "tau", "ingat", "lupa"}:
+            if bad in cleaned.split():
+                return False
+        return len(cleaned) >= 2
+
+    @classmethod
+    def _sanitize_name(cls, name: str | None) -> str | None:
         if not name:
             return None
         # Remove trailing punctuation or conversational filler
         cleaned = re.sub(r"[.,!?;:]", "", name).strip()
+        if not cls._is_valid_name(cleaned):
+            return None
         stop_words = {
             "ya", "nih", "dong", "sih", "kak", "om", "halo", "hai",
             "siswa", "murid", "pelajar", "seorang", "baru", "belajar",
@@ -263,5 +312,5 @@ class StudentMemoryService:
         words = [w for w in cleaned.split() if w.lower() not in stop_words]
         if not words or len(" ".join(words)) < 2:
             return None
-        # Capitalize each word properly
-        return " ".join(w.capitalize() for w in words[:4])
+        sanitized = " ".join(w.capitalize() for w in words[:4])
+        return sanitized if cls._is_valid_name(sanitized) else None
