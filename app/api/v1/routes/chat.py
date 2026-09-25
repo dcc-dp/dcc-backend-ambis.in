@@ -17,6 +17,10 @@ from app.api.v1.services.student_memory import (
     DEFAULT_STUDENT_ID,
     StudentMemoryService,
 )
+from app.api.v1.services.canvas_builder import (
+    should_open_canvas,
+    build_canvas_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +251,7 @@ async def chat_stream(
                 f"data: {json.dumps({'student_id': student_id, 'name': valid_name, 'grade': student_grade}, ensure_ascii=False)}\n\n"
             )
 
+        full_response = ""
         try:
             async for chunk in client.stream_text(
                 request.model_id,
@@ -254,6 +259,7 @@ async def chat_stream(
                 request.prompt,
                 messages=history_messages,
             ):
+                full_response += chunk
                 total_chars += len(chunk)
                 yield (
                     f"event: token\n"
@@ -265,6 +271,34 @@ async def chat_stream(
                 f"data: {json.dumps({'message': str(exc)}, ensure_ascii=True)}\n\n"
             )
             return
+
+        # Emit canvas payload when response warrants deep explanation
+        if full_response and should_open_canvas(request.prompt, full_response):
+            try:
+                canvas = build_canvas_payload(request.prompt, full_response)
+                canvas_dict = {
+                    "title": canvas.title,
+                    "subject": canvas.subject,
+                    "analogy": canvas.analogy,
+                    "concept": canvas.concept,
+                    "steps": [
+                        {
+                            "number": s.number,
+                            "title": s.title,
+                            "body": s.body,
+                            "formula": s.formula,
+                        }
+                        for s in canvas.steps
+                    ],
+                    "summary": canvas.summary,
+                    "raw_content": canvas.raw_content,
+                }
+                yield (
+                    f"event: canvas\n"
+                    f"data: {json.dumps(canvas_dict, ensure_ascii=False)}\n\n"
+                )
+            except Exception as canvas_err:
+                logger.warning("Canvas build error: %s", canvas_err)
 
         elapsed_ms = int((time.time() - start) * 1000)
         yield (
