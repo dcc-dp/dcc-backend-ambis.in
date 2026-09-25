@@ -10,6 +10,7 @@ Semua provider diakses lewat interface yang sama:
     client = MultiAIClient()
     response = await client.complete(model_id, system_prompt, user_prompt)
 """
+import asyncio
 import json
 import logging
 import re
@@ -293,7 +294,7 @@ async def _complete_9router(
     user_prompt: str,
     messages: list[dict[str, str]] | None = None,
 ) -> str:
-    """Call 9router via OpenAI-compatible REST API."""
+    """Call 9router via OpenAI-compatible REST API with automatic retry and model fallback."""
     url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
 
     if messages:
@@ -304,27 +305,53 @@ async def _complete_9router(
             {"role": "user", "content": user_prompt},
         ]
 
-    payload = {
-        "model": model_name,
-        "messages": payload_messages,
-        "temperature": 0.7,
-        "max_tokens": 4096,
-        "stream": False,
-    }
+    models_to_try = [model_name]
+    fallback_model = "gemini/gemini-2.5-flash"
+    if model_name != fallback_model:
+        models_to_try.append(fallback_model)
+
     headers = {
         "Authorization": f"Bearer {settings.llm_api_key}",
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+    last_error = None
+    for attempt_model in models_to_try:
+        payload = {
+            "model": attempt_model,
+            "messages": payload_messages,
+            "temperature": 0.7,
+            "max_tokens": 4096,
+            "stream": False,
+        }
 
-    try:
-        return data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError) as e:
-        raise RuntimeError(f"Unexpected 9router response format: {data}") from e
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(url, json=payload, headers=headers)
+                    if response.status_code != 200:
+                        err_text = response.text
+                        logger.warning(
+                            "9router complete error (model=%s, status=%s): %s",
+                            attempt_model,
+                            response.status_code,
+                            err_text[:200],
+                        )
+                        if response.status_code in (502, 503, 504, 429):
+                            await asyncio.sleep(1.2)
+                            continue
+                        response.raise_for_status()
+
+                    data = response.json()
+                    return data["choices"][0]["message"]["content"]
+            except Exception as e:
+                last_error = e
+                logger.warning("Complete attempt %d for model %s failed: %s", attempt + 1, attempt_model, e)
+                await asyncio.sleep(1.0)
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("9router request failed after all attempts and fallbacks.")
 
 
 async def _stream_9router(
@@ -333,7 +360,7 @@ async def _stream_9router(
     user_prompt: str,
     messages: list[dict[str, str]] | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Stream 9router via OpenAI-compatible /chat/completions?stream=true."""
+    """Stream 9router via OpenAI-compatible /chat/completions?stream=true with automatic retry and model fallback."""
     url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
 
     if messages:
@@ -344,34 +371,70 @@ async def _stream_9router(
             {"role": "user", "content": user_prompt},
         ]
 
-    payload = {
-        "model": model_name,
-        "messages": payload_messages,
-        "temperature": 0.7,
-        "max_tokens": 4096,
-        "stream": True,
-    }
+    models_to_try = [model_name]
+    fallback_model = "gemini/gemini-2.5-flash"
+    if model_name != fallback_model:
+        models_to_try.append(fallback_model)
+
     headers = {
         "Authorization": f"Bearer {settings.llm_api_key}",
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        async with client.stream("POST", url, json=payload, headers=headers) as response:
-            response.raise_for_status()
-            async for raw_line in response.aiter_lines():
-                line = raw_line.strip()
-                if not line or line == "[DONE]":
-                    continue
-                if line.startswith("data: "):
-                    try:
-                        chunk_obj = json.loads(line[len("data: "):])
-                    except json.JSONDecodeError:
-                        continue
-                    delta = chunk_obj.get("choices", [{}])[0].get("delta", {})
-                    text = delta.get("content")
-                    if text:
-                        yield text
+    last_error = None
+    for attempt_model in models_to_try:
+        payload = {
+            "model": attempt_model,
+            "messages": payload_messages,
+            "temperature": 0.7,
+            "max_tokens": 4096,
+            "stream": True,
+        }
+
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    async with client.stream("POST", url, json=payload, headers=headers) as response:
+                        if response.status_code != 200:
+                            err_bytes = await response.aread()
+                            err_msg = err_bytes.decode(errors="replace")
+                            logger.warning(
+                                "9router stream error (model=%s, status=%s): %s",
+                                attempt_model,
+                                response.status_code,
+                                err_msg[:200],
+                            )
+                            if response.status_code in (502, 503, 504, 429):
+                                await asyncio.sleep(1.2)
+                                continue
+                            response.raise_for_status()
+
+                        streamed_any = False
+                        async for raw_line in response.aiter_lines():
+                            line = raw_line.strip()
+                            if not line or line == "[DONE]":
+                                continue
+                            if line.startswith("data: "):
+                                try:
+                                    chunk_obj = json.loads(line[len("data: "):])
+                                except json.JSONDecodeError:
+                                    continue
+                                delta = chunk_obj.get("choices", [{}])[0].get("delta", {})
+                                text = delta.get("content")
+                                if text:
+                                    streamed_any = True
+                                    yield text
+
+                        if streamed_any:
+                            return
+            except Exception as e:
+                last_error = e
+                logger.warning("Stream attempt %d for model %s failed: %s", attempt + 1, attempt_model, e)
+                await asyncio.sleep(1.0)
+
+    if last_error:
+        raise last_error
+
 
 
 # ---------------------------------------------------------------------------

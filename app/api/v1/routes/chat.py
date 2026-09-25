@@ -266,9 +266,17 @@ async def chat_stream(
                     f"data: {json.dumps({'chunk': chunk}, ensure_ascii=False)}\n\n"
                 )
         except Exception as exc:
+            err_str = str(exc)
+            if "503" in err_str or "Service Unavailable" in err_str:
+                user_msg = "Layanan model AI sedang mengalami beban tinggi sementara (503 Service Unavailable). Silakan klik kirim ulang pesanmu."
+            elif "502" in err_str or "504" in err_str or "timeout" in err_str.lower():
+                user_msg = "Koneksi ke gateway AI mengalami batas waktu (timeout). Silakan coba kirim kembali."
+            else:
+                user_msg = err_str
+
             yield (
                 f"event: error\n"
-                f"data: {json.dumps({'message': str(exc)}, ensure_ascii=True)}\n\n"
+                f"data: {json.dumps({'message': user_msg}, ensure_ascii=False)}\n\n"
             )
             return
 
