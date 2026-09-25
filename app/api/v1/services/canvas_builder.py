@@ -237,6 +237,10 @@ def _extract_steps(text: str) -> list[CanvasStep]:
 
             steps.append(CanvasStep(number=num, title=f"Kasus {num}: {title}", body=body, formula=formula, short_desc=short_desc))
 
+    # Re-index steps sequentially (1, 2, 3...) to guarantee uniqueness
+    for idx, s in enumerate(steps, start=1):
+        s.number = idx
+
     return steps
 
 
