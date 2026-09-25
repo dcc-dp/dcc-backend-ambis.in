@@ -1,16 +1,24 @@
-"""SSE chat endpoint — streaming & non-streaming multi-model chat."""
+"""SSE chat endpoint — streaming & non-streaming multi-model chat with persistent DB memory."""
 import json
+import logging
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db
 from app.api.v1.services.multi_ai import (
     DEFAULT_MODEL_ID,
-    MultiAIClient,
     get_multi_ai_client,
 )
+from app.api.v1.services.student_memory import (
+    DEFAULT_STUDENT_ID,
+    StudentMemoryService,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -29,11 +37,25 @@ DEFAULT_SYSTEM_PROMPT = (
 
 
 class StudentContext(BaseModel):
+    student_id: str | None = None
+    name: str | None = None
+    grade: str | None = None
     goal: str | None = None
     topic: str | None = None
     subtopic: str | None = None
     difficulty: str | None = None
+    facts: list[str] | None = None
     previous_sessions: list[str] | None = None
+
+
+class StudentMemorySaveRequest(BaseModel):
+    student_id: str = DEFAULT_STUDENT_ID
+    name: str | None = None
+    grade: str | None = None
+    goal: str | None = None
+    topic: str | None = None
+    facts: list[str] | None = None
+    summary: str | None = None
 
 
 class ChatMessage(BaseModel):
@@ -51,15 +73,95 @@ class ChatStreamRequest(BaseModel):
     stream: bool = True
 
 
+@router.get("/memory")
+async def get_student_memory(
+    student_id: str = Query(default=DEFAULT_STUDENT_ID),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ambil memori jangka panjang siswa dari PostgreSQL database."""
+    service = StudentMemoryService(db)
+    return await service.get_memory(student_id)
+
+
+@router.post("/memory")
+async def save_student_memory(
+    payload: StudentMemorySaveRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Simpan atau perbarui memori jangka panjang siswa di database."""
+    service = StudentMemoryService(db)
+    return await service.save_memory(
+        student_id=payload.student_id,
+        name=payload.name,
+        grade=payload.grade,
+        goal=payload.goal,
+        topic=payload.topic,
+        facts=payload.facts,
+        summary=payload.summary,
+    )
+
+
 @router.post("/stream")
-async def chat_stream(request: ChatStreamRequest):
-    """Chat dengan streaming SSE (default) atau non-streaming JSON (mendukung memori 1 sesi penuh & memori jangka panjang)."""
+async def chat_stream(
+    request: ChatStreamRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Chat dengan streaming SSE (default) atau non-streaming JSON (mendukung memori 1 sesi penuh & memori jangka panjang database)."""
     system_prompt = request.system_prompt or DEFAULT_SYSTEM_PROMPT
 
-    # Inject long-term student memory and cross-session context if provided
+    memory_service = StudentMemoryService(db)
+    student_id = (
+        request.student_context.student_id
+        if (request.student_context and request.student_context.student_id)
+        else DEFAULT_STUDENT_ID
+    )
+
+    # 1. Cek apakah ada perkenalan identitas dari prompt pesan user saat ini
+    extracted = memory_service.extract_identity_from_text(request.prompt)
+
+    # 2. Ambil data memori tersimpan dari database PostgreSQL
+    db_memory = await memory_service.get_memory(student_id)
+
+    # Tentukan nama dan identitas siswa (prioritas: deteksi baru > payload request > DB tersimpan)
+    student_name = (
+        extracted.get("name")
+        or (request.student_context and request.student_context.name)
+        or db_memory.get("name")
+    )
+    student_grade = (
+        extracted.get("grade")
+        or (request.student_context and request.student_context.grade)
+        or db_memory.get("grade")
+    )
+
+    # Jika ada deteksi baru atau nama berubah, perbarui ke database
+    if extracted.get("name") or extracted.get("grade"):
+        try:
+            await memory_service.save_memory(
+                student_id=student_id,
+                name=student_name,
+                grade=student_grade,
+                facts=[f"Memperkenalkan diri sebagai {student_name}"] if student_name else None,
+            )
+        except Exception as err:
+            logger.warning("Auto-save memory from prompt warning: %s", err)
+
+    # 3. Rakit instruksi memori jangka panjang ke dalam System Prompt
+    memories = ["\n[MEMORI JANGKA PANJANG & PROFIL BELAJAR SISWA]"]
+
+    if student_name:
+        memories.append(f"- NAMA PANGGILAN RESMI SISWA: {student_name}")
+        memories.append("- ATURAN MUTLAK IDENTITAS SISWA:")
+        memories.append(f"  * Siswa ini BERNAMA '{student_name}'. Kamu SUDAH MENGENAL siswa ini.")
+        memories.append("  * DILARANG KERAS bertanya 'siapa namamu?', meminta siswa memperkenalkan diri lagi, atau bersikap seperti orang asing yang baru pertama kali kenal!")
+        memories.append(f"  * Sapalah siswa secara akrab, hangat, dan sebut namanya (misal: 'Halo {student_name}!', 'Hai {student_name}!').")
+        memories.append("  * Pertahankan rasa keakraban antar-sesi seolah kamu adalah kakak kelas yang selalu mendampinginya.")
+
+    if student_grade:
+        memories.append(f"- Jenjang/Kelas Siswa: {student_grade}")
+
     if request.student_context:
         ctx = request.student_context
-        memories = ["\n[MEMORI JANGKA PANJANG & PROFIL BELAJAR SISWA]"]
         if ctx.goal:
             memories.append(f"- Target Belajar: {ctx.goal}")
         if ctx.topic or ctx.subtopic:
@@ -70,15 +172,20 @@ async def chat_stream(request: ChatStreamRequest):
             memories.append("- Riwayat Sesi Percakapan Sebelumnya:")
             for s in ctx.previous_sessions:
                 memories.append(f"  * {s}")
-        memories.append(
-            "- PANDUAN MEMORI PERSONAL: Kamu mengingat profil dan topik-topik yang pernah dipelajari siswa ini sebelumnya. "
-            "Jika siswa membuat percakapan baru atau menyinggung materi terdahulu, tunjukkan pemahamanmu secara hangat "
-            "(misal: 'Senang ketemu lagi! Terakhir kamu sudah belajar aljabar, sekarang mau lanjut lagi ya?'). "
-            "Pahami sejauh mana perkembangan belajarnya!"
-        )
-        system_prompt += "\n" + "\n".join(memories)
 
-    # Build conversation messages payload for full current session
+    db_facts = db_memory.get("facts") or []
+    if db_facts:
+        memories.append("- Catatan Pembelajaran Sebelumnya:")
+        for f in db_facts[-5:]:
+            memories.append(f"  * {f}")
+
+    memories.append(
+        "- PANDUAN KESINAMBUNGAN BELAJAR: Kamu mengingat profil dan topik-topik yang pernah dipelajari siswa ini sebelumnya. "
+        "Jika siswa membuat percakapan baru atau menyinggung materi terdahulu, tunjukkan pemahamanmu secara hangat dan nyambung."
+    )
+    system_prompt += "\n" + "\n".join(memories)
+
+    # 4. Build conversation messages payload for full current session
     history_messages: list[dict[str, str]] = [
         {"role": "system", "content": system_prompt}
     ]
@@ -107,6 +214,11 @@ async def chat_stream(request: ChatStreamRequest):
             "answer": answer,
             "model_used": request.model_id,
             "processing_time_ms": elapsed_ms,
+            "student_memory": {
+                "student_id": student_id,
+                "name": student_name,
+                "grade": student_grade,
+            },
         }
 
     client = get_multi_ai_client()
@@ -115,10 +227,17 @@ async def chat_stream(request: ChatStreamRequest):
         start = time.time()
         total_chars = 0
 
+        # Kirim status inisiasi & informasi memori aktif
         yield (
             f"event: thinking\n"
             f"data: {json.dumps({'status': 'memulai...', 'model': request.model_id}, ensure_ascii=False)}\n\n"
         )
+
+        if student_name or student_grade:
+            yield (
+                f"event: memory\n"
+                f"data: {json.dumps({'student_id': student_id, 'name': student_name, 'grade': student_grade}, ensure_ascii=False)}\n\n"
+            )
 
         try:
             async for chunk in client.stream_text(
@@ -142,7 +261,7 @@ async def chat_stream(request: ChatStreamRequest):
         elapsed_ms = int((time.time() - start) * 1000)
         yield (
             f"event: done\n"
-            f"data: {json.dumps({'model_used': request.model_id, 'processing_time_ms': elapsed_ms, 'total_chars': total_chars}, ensure_ascii=False)}\n\n"
+            f"data: {json.dumps({'model_used': request.model_id, 'processing_time_ms': elapsed_ms, 'total_chars': total_chars, 'student_name': student_name}, ensure_ascii=False)}\n\n"
         )
 
     return StreamingResponse(
@@ -154,3 +273,4 @@ async def chat_stream(request: ChatStreamRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
