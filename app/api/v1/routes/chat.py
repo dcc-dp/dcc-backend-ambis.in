@@ -289,16 +289,19 @@ async def chat_stream(
                     "subject": canvas.subject,
                     "analogy": canvas.analogy,
                     "concept": canvas.concept,
+                    "core_formula": canvas.core_formula,
                     "steps": [
                         {
                             "number": s.number,
                             "title": s.title,
                             "body": s.body,
                             "formula": s.formula,
+                            "short_desc": s.short_desc,
                         }
                         for s in canvas.steps
                     ],
                     "summary": canvas.summary,
+                    "final_answer": canvas.final_answer,
                     "raw_content": canvas.raw_content,
                 }
                 yield (

@@ -45,6 +45,7 @@ class CanvasStep:
     title: str
     body: str  # may contain markdown / KaTeX
     formula: str = ""
+    short_desc: str = ""
 
 
 @dataclass
@@ -53,45 +54,93 @@ class CanvasPayload:
     subject: str = "Matematika"   # Matematika | Informatika | Umum
     analogy: str = ""
     concept: str = ""
+    core_formula: str = ""
     steps: list[CanvasStep] = field(default_factory=list)
     summary: str = ""
-    quiz: list[dict] = field(default_factory=list)  # [{"q": "...", "a": "..."}]
+    final_answer: str = ""
+    quiz: list[dict] = field(default_factory=list)
     raw_content: str = ""
 
 
 def _extract_heading_title(text: str) -> str:
     """Pull the first markdown heading as canvas title."""
     m = re.search(r"^#{1,3}\s+(.+)$", text, re.MULTILINE)
-    return m.group(1).strip() if m else "Penjelasan Mendalam"
+    if m:
+        t = m.group(1).strip()
+        t = re.sub(r"^(Perbaikan Kode|Penjelasan|Cara|Rumus)[:\s-]*", "", t, flags=re.I)
+        return t or m.group(1).strip()
+    return "Peta Pemahaman Materi"
 
 
 def _detect_subject(text: str, prompt: str) -> str:
     combined = (text + " " + prompt).lower()
     if any(w in combined for w in ["python", "javascript", "program", "kode", "code",
-                                    "algoritma", "variabel", "fungsi", "loop", "if"]):
+                                    "algoritma", "variabel", "fungsi", "loop", "if", "assert", "syntax"]):
         return "Informatika"
     if any(w in combined for w in ["rumus", "persamaan", "integral", "turunan", "matriks",
-                                    "aljabar", "geometri", "statistik", "probabilitas"]):
+                                    "aljabar", "geometri", "segitiga", "luas", "keliling", "x^"]):
         return "Matematika"
     return "Umum"
 
 
+GREETING_STARTS = (
+    "halo", "hai", "wah", "keren", "kak ambis", "senang",
+    "tentu", "selamat", "semangat", "siap", "oke", "nah"
+)
+
+
+def _is_conversational_noise(line: str) -> bool:
+    """Check if a line is just conversational greeting or closing cheer."""
+    low = line.strip().lower()
+    if any(low.startswith(g) for g in GREETING_STARTS):
+        return True
+    if any(phrase in low for phrase in [
+        "tetap semangat", "semoga membantu", "tanya ke kak ambis",
+        "ada yang mau ditanyakan", "jangan ragu", "teman belajar",
+    ]):
+        return True
+    return False
+
+
 def _extract_analogy(text: str) -> str:
-    """Find an analogy / intro paragraph (first non-heading paragraph)."""
-    lines = text.split("\n")
+    """Find an actual analogy or intuitive concept, skipping conversational greetings."""
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    
+    # Priority 1: Look for explicit analogy keywords
     for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and not stripped.startswith("```"):
-            if len(stripped) > 30:
-                return stripped[:500]
+        if line.startswith("#") or line.startswith("```"):
+            continue
+        low = line.lower()
+        if any(k in low for k in ["bayangkan", "ibarat", "misalkan", "analoginya", "logikanya", "seperti"]):
+            if not _is_conversational_noise(line) and len(line) > 25:
+                return line[:500]
+
+    # Priority 2: First informative paragraph that is NOT a greeting
+    for line in lines:
+        if line.startswith("#") or line.startswith("```"):
+            continue
+        if not _is_conversational_noise(line) and len(line) > 35:
+            return line[:500]
+
+    return ""
+
+
+def _extract_core_formula(text: str) -> str:
+    """Find display math $$...$$ or code assertion/formula."""
+    m = re.search(r"\$\$([\s\S]*?)\$\$", text)
+    if m:
+        return m.group(0).strip()
+    # Code assignment formula match (e.g. luas = 0.5 * alas * tinggi)
+    m_code = re.search(r"(\w+\s*=\s*[\w\d\.\+\-\*\/\(\)\s]+)", text)
+    if m_code and any(op in m_code.group(1) for op in ["*", "+", "/", "-"]):
+        return m_code.group(1).strip()
     return ""
 
 
 def _extract_steps(text: str) -> list[CanvasStep]:
-    """Parse **Langkah N** or ### Langkah N blocks into CanvasStep objects."""
+    """Parse **Langkah N** or ### Langkah N blocks into CanvasStep objects with short summary."""
     steps: list[CanvasStep] = []
 
-    # Pattern: **Langkah 1: Title** followed by body until next langkah or end
     pattern = re.compile(
         r"(?:\*{0,2}Langkah\s+(\d+)[:\.]?\*{0,2})\s*([^\n]*)\n([\s\S]*?)(?=(?:\*{0,2}Langkah\s+\d+)|$)",
         re.IGNORECASE,
@@ -101,11 +150,19 @@ def _extract_steps(text: str) -> list[CanvasStep]:
         title = m.group(2).replace("**", "").strip() or f"Langkah {num}"
         body = m.group(3).strip()
 
-        # Extract any display-math formula from body
         formula_match = re.search(r"\$\$([\s\S]*?)\$\$", body)
         formula = formula_match.group(0).strip() if formula_match else ""
 
-        steps.append(CanvasStep(number=num, title=title, body=body, formula=formula))
+        # Make a short 1-line description for node cards
+        first_line = ""
+        for bl in body.split("\n"):
+            bls = bl.strip()
+            if bls and not bls.startswith("#") and not bls.startswith("```"):
+                first_line = re.sub(r"[\*\`]", "", bls)
+                break
+        short_desc = first_line[:120] if first_line else title
+
+        steps.append(CanvasStep(number=num, title=title, body=body, formula=formula, short_desc=short_desc))
 
     # Fallback: markdown ### Langkah N headers
     if not steps:
@@ -119,38 +176,88 @@ def _extract_steps(text: str) -> list[CanvasStep]:
             body = m.group(3).strip()
             formula_match = re.search(r"\$\$([\s\S]*?)\$\$", body)
             formula = formula_match.group(0).strip() if formula_match else ""
-            steps.append(CanvasStep(number=num, title=title, body=body, formula=formula))
+
+            first_line = ""
+            for bl in body.split("\n"):
+                bls = bl.strip()
+                if bls and not bls.startswith("#") and not bls.startswith("```"):
+                    first_line = re.sub(r"[\*\`]", "", bls)
+                    break
+            short_desc = first_line[:120] if first_line else title
+
+            steps.append(CanvasStep(number=num, title=title, body=body, formula=formula, short_desc=short_desc))
 
     return steps
 
 
-def _extract_summary(text: str) -> str:
-    """Extract conclusion / Jadi, ... paragraph."""
-    m = re.search(r"(?:Jadi,|Kesimpulan:|Maka,|Sehingga,)([^\n]+(?:\n(?!#)[^\n]+)*)", text)
-    if m:
-        return m.group(0).strip()[:600]
-    # Fallback: last non-empty paragraph
-    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
-    return paras[-1][:400] if paras else ""
+def _extract_summary_and_answer(text: str) -> tuple[str, str]:
+    """Extract clean, meaningful conclusion and the specific final answer (avoiding cheerleading)."""
+    summary = ""
+    final_answer = ""
+
+    # Check for explicit sections
+    sum_match = re.search(
+        r"^#{1,3}\s+(?:Kesimpulan|Ringkasan|Hasil Akhir)[:\s]*([^\n]*)\n([\s\S]*?)(?=^#{1,3}\s+|$)",
+        text, re.MULTILINE | re.I
+    )
+    if sum_match:
+        content = (sum_match.group(1) + " " + sum_match.group(2)).strip()
+        lines = [l.strip() for l in content.split("\n") if l.strip() and not _is_conversational_noise(l)]
+        summary = "\n".join(lines)[:600]
+
+    # Look for specific result sentences: "Jadi, ...", "Maka, ...", "Sehingga diperoleh ..."
+    if not summary:
+        matches = re.findall(
+            r"((?:Jadi|Maka|Kesimpulannya|Hasil akhirnya|Sehingga)[^\.\n]+\.(?:[^\.\n]+\.)?)",
+            text, re.I
+        )
+        for cand in matches:
+            if not _is_conversational_noise(cand):
+                summary = cand.strip()
+                break
+
+    # Extract final numerical or formula answer
+    ans_match = re.search(r"(?:Jawaban akhir|Hasil akhir|Nilai dari|assert|\=\s*)[:\s]*([^\n]+)", text, re.I)
+    if ans_match:
+        final_answer = ans_match.group(0).strip()[:200]
+
+    if not summary:
+        # Fallback to non-conversational last paragraphs
+        paras = [p.strip() for p in text.split("\n\n") if p.strip() and not _is_conversational_noise(p)]
+        summary = paras[-1][:400] if paras else "Materi telah dianalisis secara bertahap."
+
+    return summary, final_answer
 
 
 def build_canvas_payload(prompt: str, response: str) -> CanvasPayload:
-    """Parse the full AI response into a structured CanvasPayload."""
+    """Parse the full AI response into a structured CanvasPayload with clean non-ambiguous content."""
+    summary, final_answer = _extract_summary_and_answer(response)
+
     payload = CanvasPayload(
         title=_extract_heading_title(response),
         subject=_detect_subject(response, prompt),
         analogy=_extract_analogy(response),
+        core_formula=_extract_core_formula(response),
         steps=_extract_steps(response),
-        summary=_extract_summary(response),
+        summary=summary,
+        final_answer=final_answer,
         raw_content=response,
     )
 
-    # concept: first ### section that is not Langkah
+    # Concept: Find section dedicated to principle/theory or explanation (not Langkah, not greetings)
     concept_match = re.search(
-        r"^#{1,3}\s+(?!Langkah)([^\n]+)\n([\s\S]*?)(?=^#{1,3}\s+|$)",
-        response, re.MULTILINE
+        r"^#{1,3}\s+(?:Konsep|Prinsip|Teori|Penjelasan|Dasar Teori|Logika|Aturan|Perbaikan Kode)[^\n]*\n([\s\S]*?)(?=^#{1,3}\s+|$)",
+        response, re.MULTILINE | re.I
     )
     if concept_match:
-        payload.concept = (concept_match.group(1) + "\n" + concept_match.group(2)).strip()[:600]
+        payload.concept = concept_match.group(1).strip()[:700]
+    else:
+        # Fallback: first non-Langkah section
+        other_sec = re.search(
+            r"^#{1,3}\s+(?!Langkah|Kesimpulan|Ringkasan)([^\n]+)\n([\s\S]*?)(?=^#{1,3}\s+|$)",
+            response, re.MULTILINE
+        )
+        if other_sec:
+            payload.concept = (other_sec.group(1) + "\n" + other_sec.group(2)).strip()[:600]
 
     return payload
