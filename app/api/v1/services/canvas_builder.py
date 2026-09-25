@@ -5,24 +5,28 @@ from dataclasses import dataclass, field
 
 # ── Trigger heuristics ─────────────────────────────────────────────────────────
 CANVAS_KEYWORD_PATTERNS = [
+    r"\bcanvas\b", r"\bkanvas\b", r"\bvisual\b", r"\bgambar\b",
     r"\bjellaskan\b", r"\bjelaskan\b", r"\bpahami\b", r"\bpembuktian\b",
     r"\bbuktikan\b", r"\balgorithm\b", r"\balgoritma\b", r"\bderivasi\b",
     r"\bturunkan\b", r"\blangkah[\s-]?demi[\s-]?langkah\b", r"\bstep by step\b",
     r"\bcara kerja\b", r"\bbagaimana cara\b", r"\bgimana cara\b",
     r"\bkonsep\b", r"\bprinsip\b", r"\bteori\b", r"\brumus\b",
     r"\bcontoh soal\b", r"\bcontoh kode\b", r"\bpseudocode\b",
-    r"\bflowchart\b", r"\bdiagram\b",
+    r"\bflowchart\b", r"\bdiagram\b", r"\balur\b", r"\btahap\b",
+    r"\btahapan\b", r"\bsoal\b", r"\bhitung\b",
 ]
 
 CANVAS_RESPONSE_SIGNALS = [
-    r"###\s+Langkah",       # step-by-step headings
-    r"^Langkah\s+\d+",      # explicit step lines
-    r"```[a-zA-Z]+",        # code blocks
-    r"\$\$[^\n]{5,}\$\$",   # display math
-    r"####",                # sub-sub-headings (deep structure)
+    r"###\s+Langkah",          # step-by-step headings
+    r"^Langkah\s+\d+",         # explicit step lines
+    r"^\d+[\.\)]\s+\*+",       # numbered steps like 1. **Buat Segitiga:**
+    r"^#{1,3}\s+\*+Kemungkinan\s+\d+", # Kemungkinan 1
+    r"```[a-zA-Z]+",           # code blocks
+    r"\$\$[^\n]{5,}\$\$",      # display math
+    r"####",                   # sub-sub-headings (deep structure)
 ]
 
-MIN_RESPONSE_LEN_FOR_CANVAS = 600  # characters — short answers skip canvas
+MIN_RESPONSE_LEN_FOR_CANVAS = 250  # characters
 
 
 def should_open_canvas(prompt: str, response: str) -> bool:
@@ -167,7 +171,7 @@ def _extract_steps(text: str) -> list[CanvasStep]:
     # Fallback: markdown ### Langkah N headers
     if not steps:
         pattern2 = re.compile(
-            r"^#{1,4}\s+(?:Langkah|Step)\s+(\d+)[:\.]?\s*([^\n]*)\n([\s\S]*?)(?=^#{1,4}\s+|$)",
+            r"^#{1,4}\s+(?:Langkah|Step|Tahap)\s+(\d+)[:\.]?\s*([^\n]*)\n([\s\S]*?)(?=^#{1,4}\s+|$)",
             re.MULTILINE | re.IGNORECASE,
         )
         for m in pattern2.finditer(text):
@@ -186,6 +190,52 @@ def _extract_steps(text: str) -> list[CanvasStep]:
             short_desc = first_line[:120] if first_line else title
 
             steps.append(CanvasStep(number=num, title=title, body=body, formula=formula, short_desc=short_desc))
+
+    # Fallback 3: numbered list steps (e.g. 1. **Buat Segitiga ABC:** ...)
+    if not steps:
+        pattern3 = re.compile(
+            r"(?:^(\d+)[\.\)]\s+)\*{0,2}([^\n]+)\*{0,2}\n([\s\S]*?)(?=(?:^\d+[\.\)]\s+)|(?:^#{1,3}\s+)|$)",
+            re.MULTILINE,
+        )
+        for m in pattern3.finditer(text):
+            num = int(m.group(1))
+            title = m.group(2).replace("**", "").replace(":", "").strip() or f"Langkah {num}"
+            body = m.group(3).strip()
+            formula_match = re.search(r"\$\$([\s\S]*?)\$\$", body)
+            formula = formula_match.group(0).strip() if formula_match else ""
+
+            first_line = ""
+            for bl in body.split("\n"):
+                bls = bl.strip()
+                if bls and not bls.startswith("#") and not bls.startswith("```"):
+                    first_line = re.sub(r"[\*\`]", "", bls)
+                    break
+            short_desc = first_line[:120] if first_line else title
+
+            steps.append(CanvasStep(number=num, title=title, body=body, formula=formula, short_desc=short_desc))
+
+    # Fallback 4: sections starting with Kemungkinan / Kasus / Opsi
+    if not steps:
+        pattern4 = re.compile(
+            r"^#{1,3}\s+\*?(?:Kemungkinan|Kasus|Opsi)\s+(\d+)[:\s]*([^\n]*)\*?\n([\s\S]*?)(?=^#{1,3}\s+|$)",
+            re.MULTILINE | re.IGNORECASE,
+        )
+        for m in pattern4.finditer(text):
+            num = int(m.group(1))
+            title = m.group(2).replace("**", "").strip() or f"Kasus {num}"
+            body = m.group(3).strip()
+            formula_match = re.search(r"\$\$([\s\S]*?)\$\$", body)
+            formula = formula_match.group(0).strip() if formula_match else ""
+
+            first_line = ""
+            for bl in body.split("\n"):
+                bls = bl.strip()
+                if bls and not bls.startswith("#") and not bls.startswith("```"):
+                    first_line = re.sub(r"[\*\`]", "", bls)
+                    break
+            short_desc = first_line[:120] if first_line else title
+
+            steps.append(CanvasStep(number=num, title=f"Kasus {num}: {title}", body=body, formula=formula, short_desc=short_desc))
 
     return steps
 

@@ -321,7 +321,7 @@ async def _complete_9router(
             "model": attempt_model,
             "messages": payload_messages,
             "temperature": 0.7,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "stream": False,
         }
 
@@ -387,7 +387,7 @@ async def _stream_9router(
             "model": attempt_model,
             "messages": payload_messages,
             "temperature": 0.7,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "stream": True,
         }
 
