@@ -28,9 +28,15 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
 class ChatStreamRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
     prompt: str = Field(..., min_length=1, max_length=10000)
+    messages: list[ChatMessage] | None = None
     model_id: str = Field(default=DEFAULT_MODEL_ID)
     system_prompt: str | None = None
     stream: bool = True
@@ -38,14 +44,32 @@ class ChatStreamRequest(BaseModel):
 
 @router.post("/stream")
 async def chat_stream(request: ChatStreamRequest):
-    """Chat dengan streaming SSE (default) atau non-streaming JSON."""
+    """Chat dengan streaming SSE (default) atau non-streaming JSON (mendukung multi-turn chat)."""
+    system_prompt = request.system_prompt or DEFAULT_SYSTEM_PROMPT
+
+    # Build conversation messages payload
+    history_messages: list[dict[str, str]] = [
+        {"role": "system", "content": system_prompt}
+    ]
+
+    if request.messages:
+        for m in request.messages:
+            r = "assistant" if m.role == "assistant" else "user"
+            history_messages.append({"role": r, "content": m.content})
+        # If the last message in history is not current prompt, append it
+        if not history_messages or history_messages[-1]["content"] != request.prompt:
+            history_messages.append({"role": "user", "content": request.prompt})
+    else:
+        history_messages.append({"role": "user", "content": request.prompt})
+
     if not request.stream:
         client = get_multi_ai_client()
         start = time.time()
         answer = await client.complete(
             request.model_id,
-            request.system_prompt or DEFAULT_SYSTEM_PROMPT,
+            system_prompt,
             request.prompt,
+            messages=history_messages,
         )
         elapsed_ms = int((time.time() - start) * 1000)
         return {
@@ -55,7 +79,6 @@ async def chat_stream(request: ChatStreamRequest):
         }
 
     client = get_multi_ai_client()
-    system_prompt = request.system_prompt or DEFAULT_SYSTEM_PROMPT
 
     async def event_generator():
         start = time.time()
@@ -67,7 +90,12 @@ async def chat_stream(request: ChatStreamRequest):
         )
 
         try:
-            async for chunk in client.stream_text(request.model_id, system_prompt, request.prompt):
+            async for chunk in client.stream_text(
+                request.model_id,
+                system_prompt,
+                request.prompt,
+                messages=history_messages,
+            ):
                 total_chars += len(chunk)
                 yield (
                     f"event: token\n"

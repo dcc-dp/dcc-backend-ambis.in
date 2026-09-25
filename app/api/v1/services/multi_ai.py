@@ -287,15 +287,26 @@ async def _stream_openrouter(
 # ---------------------------------------------------------------------------
 # 9router Gateway Provider (OpenAI-compatible)
 # ---------------------------------------------------------------------------
-async def _complete_9router(model_name: str, system_prompt: str, user_prompt: str) -> str:
+async def _complete_9router(
+    model_name: str,
+    system_prompt: str,
+    user_prompt: str,
+    messages: list[dict[str, str]] | None = None,
+) -> str:
     """Call 9router via OpenAI-compatible REST API."""
     url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
-    payload = {
-        "model": model_name,
-        "messages": [
+
+    if messages:
+        payload_messages = messages
+    else:
+        payload_messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
-        ],
+        ]
+
+    payload = {
+        "model": model_name,
+        "messages": payload_messages,
         "temperature": 0.7,
         "max_tokens": 4096,
         "stream": False,
@@ -317,16 +328,25 @@ async def _complete_9router(model_name: str, system_prompt: str, user_prompt: st
 
 
 async def _stream_9router(
-    model_name: str, system_prompt: str, user_prompt: str
+    model_name: str,
+    system_prompt: str,
+    user_prompt: str,
+    messages: list[dict[str, str]] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream 9router via OpenAI-compatible /chat/completions?stream=true."""
     url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
-    payload = {
-        "model": model_name,
-        "messages": [
+
+    if messages:
+        payload_messages = messages
+    else:
+        payload_messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
-        ],
+        ]
+
+    payload = {
+        "model": model_name,
+        "messages": payload_messages,
         "temperature": 0.7,
         "max_tokens": 4096,
         "stream": True,
@@ -361,6 +381,7 @@ class MultiAIClient:
     """
     Unified multi-provider AI client.
     Routes via 9router when LLM_BASE_URL is configured, or direct providers.
+    Supports multi-turn conversation messages.
     """
 
     async def complete(
@@ -368,12 +389,13 @@ class MultiAIClient:
         model_id: str,
         system_prompt: str,
         user_prompt: str,
+        messages: list[dict[str, str]] | None = None,
     ) -> str:
         """Call the selected provider or 9router gateway."""
         if settings.llm_base_url and settings.llm_api_key:
             target_model = model_id or settings.llm_model_intervention or DEFAULT_MODEL_ID
-            logger.info("MultiAIClient: routing via 9router model=%s", target_model)
-            return await _complete_9router(target_model, system_prompt, user_prompt)
+            logger.info("MultiAIClient: routing via 9router model=%s (messages=%d)", target_model, len(messages) if messages else 1)
+            return await _complete_9router(target_model, system_prompt, user_prompt, messages=messages)
 
         provider, model_name = _parse_provider(model_id)
         logger.info("MultiAIClient: calling provider=%s model=%s", provider, model_name)
@@ -394,12 +416,13 @@ class MultiAIClient:
         model_id: str,
         system_prompt: str,
         user_prompt: str,
+        messages: list[dict[str, str]] | None = None,
     ) -> dict:
         """
         Call provider and parse JSON from the response.
         Falls back to returning raw text as {"answer": "..."} if JSON parsing fails.
         """
-        raw = await self.complete(model_id, system_prompt, user_prompt)
+        raw = await self.complete(model_id, system_prompt, user_prompt, messages=messages)
         cleaned = _strip_json_fences(raw)
 
         try:
@@ -425,15 +448,18 @@ class MultiAIClient:
         model_id: str,
         system_prompt: str,
         user_prompt: str,
+        messages: list[dict[str, str]] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream response from 9router gateway or legacy direct providers."""
         if settings.llm_base_url and settings.llm_api_key:
             target_model = model_id or settings.llm_model_intervention or DEFAULT_MODEL_ID
             logger.info(
-                "MultiAIClient.stream_text: routing via 9router model=%s", target_model
+                "MultiAIClient.stream_text: routing via 9router model=%s (messages=%d)",
+                target_model,
+                len(messages) if messages else 1,
             )
             async for chunk in _stream_9router(
-                target_model, system_prompt, user_prompt
+                target_model, system_prompt, user_prompt, messages=messages
             ):
                 yield chunk
             return
