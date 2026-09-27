@@ -7,12 +7,7 @@ from app.api.v1.routes.ask import router as ask_router
 from app.api.v1.routes.curriculum import router as curriculum_router
 from app.api.v1.routes.models import router as models_router
 from app.api.v1.routes.chat import router as chat_router
-
-# Hermes Agent route is prepared as baseline stub for upcoming sprint
-try:
-    from app.api.v1.routes.hermes import router as hermes_router
-except (ImportError, Exception):
-    hermes_router = None
+from app.api.v1.routes.hermes import router as hermes_router
 
 
 def create_app() -> FastAPI:
@@ -38,8 +33,7 @@ def create_app() -> FastAPI:
     app.include_router(ask_router, prefix=settings.api_v1_prefix)
     app.include_router(models_router, prefix=settings.api_v1_prefix)
     app.include_router(chat_router, prefix=settings.api_v1_prefix)
-    if hermes_router:
-        app.include_router(hermes_router, prefix=settings.api_v1_prefix)
+    app.include_router(hermes_router, prefix=settings.api_v1_prefix)
 
     @app.get("/")
     async def root():
