@@ -42,38 +42,14 @@ class StudentMemoryService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def ensure_schema(self) -> None:
-        """Create student_memories table if not exists (safe idempotent migration)."""
-        create_sql = text(
-            """
-            CREATE TABLE IF NOT EXISTS student_memories (
-                student_id UUID PRIMARY KEY,
-                name TEXT,
-                grade TEXT,
-                goal TEXT,
-                topic TEXT,
-                facts JSONB DEFAULT '[]'::jsonb,
-                summary TEXT,
-                updated_at TIMESTAMPTZ DEFAULT now()
-            );
-            """
-        )
-        try:
-            await self.db.execute(create_sql)
-            await self.db.commit()
-        except Exception as exc:
-            logger.warning("ensure_schema student_memories warning: %s", exc)
-            await self.db.rollback()
-
     async def get_memory(self, student_id: str) -> dict[str, Any]:
         """Fetch persistent student memory from DB."""
-        await self.ensure_schema()
         valid_id = self._safe_uuid(student_id)
         query = text(
             """
             SELECT student_id, name, grade, goal, topic, facts, summary, updated_at
             FROM student_memories
-            WHERE student_id = :student_id::uuid
+            WHERE student_id = CAST(:student_id AS uuid)
             """
         )
         try:
@@ -106,7 +82,7 @@ class StudentMemoryService:
         # Fallback to profiles table if present
         try:
             prof_query = text(
-                "SELECT id, display_name, grade FROM profiles WHERE id = :id::uuid"
+                "SELECT id, display_name, grade FROM profiles WHERE id = CAST(:id AS uuid)"
             )
             res = await self.db.execute(prof_query, {"id": valid_id})
             prow = res.mappings().first()
@@ -148,7 +124,6 @@ class StudentMemoryService:
         summary: str | None = None,
     ) -> dict[str, Any]:
         """Save or update student memory into PostgreSQL."""
-        await self.ensure_schema()
         valid_id = self._safe_uuid(student_id)
         # Clean up name if provided
         clean_name = self._sanitize_name(name) if name else None
@@ -174,13 +149,14 @@ class StudentMemoryService:
         upsert_sql = text(
             """
             INSERT INTO student_memories (student_id, name, grade, goal, topic, facts, summary, updated_at)
-            VALUES (:student_id::uuid, :name, :grade, :goal, :topic, :facts::jsonb, :summary, now())
+            VALUES (CAST(:student_id AS uuid), :name, :grade, :goal, :topic,
+                    CAST(:facts AS jsonb), :summary, now())
             ON CONFLICT (student_id) DO UPDATE SET
                 name = COALESCE(:name, student_memories.name),
                 grade = COALESCE(:grade, student_memories.grade),
                 goal = COALESCE(:goal, student_memories.goal),
                 topic = COALESCE(:topic, student_memories.topic),
-                facts = :facts::jsonb,
+                facts = CAST(:facts AS jsonb),
                 summary = COALESCE(:summary, student_memories.summary),
                 updated_at = now()
             """
@@ -203,7 +179,8 @@ class StudentMemoryService:
             if final_name:
                 try:
                     sync_prof = text(
-                        "UPDATE profiles SET display_name = :name WHERE id = :student_id::uuid"
+                        "UPDATE profiles SET display_name = :name "
+                        "WHERE id = CAST(:student_id AS uuid)"
                     )
                     await self.db.execute(
                         sync_prof, {"name": final_name, "student_id": valid_id}
