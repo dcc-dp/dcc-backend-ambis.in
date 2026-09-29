@@ -27,7 +27,16 @@ from app.core.database import async_session_factory
 from app.core.llm_client import LLMClient
 
 _SELECT_SQL = "SELECT id, content FROM curriculum_chunks WHERE embedding IS NULL ORDER BY id"
-_UPDATE_SQL = "UPDATE curriculum_chunks SET embedding = CAST(:embedding AS vector) WHERE id = :id"
+
+# metadata - 'needs_embedding' drops that key, so the flag seeds set stops lying
+# once the vector is actually there. `-` on jsonb is a no-op when the key is
+# absent, so re-running this is safe.
+_UPDATE_SQL = (
+    "UPDATE curriculum_chunks "
+    "SET embedding = CAST(:embedding AS vector), "
+    "    metadata = metadata - 'needs_embedding' "
+    "WHERE id = :id"
+)
 
 
 def _to_pgvector_literal(vector: list[float]) -> str:
