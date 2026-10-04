@@ -4,7 +4,7 @@ See AMBIS_DB_Architecture.md §7.1-B (prompt suite) and §7.2 item 4.
 
 PolicyEngine (app/tools/policy_engine.py) decides WHICH kind of intervention to
 give — deterministic, no LLM. This tool generates the actual TEXT shown to the
-student for that kind: one 9router call per kind, SMP-VII tone, and — per the
+student for that kind: one LLM call per kind, SMP-VII tone, and — per the
 architecture's explicit guard ("never give the final answer before ladder
 allows it") — never reveals the exercise's final answer, even at the
 worked_example rung, the ladder's last step before a human/instructor would

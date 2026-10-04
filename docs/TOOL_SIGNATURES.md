@@ -152,5 +152,5 @@ also filters to `is_correct=False` rows for the same reason — don't reuse it a
 - `ask.py`/`AskService` (free-text Q&A) — untouched, out of scope for the wiring task.
 - `/sessions` / `/problems` CRUD routes — don't exist; the wiring auto-creates those rows inline
   when the caller omits `session_id`/`problem_id`.
-- Live end-to-end smoke test against real Supabase + a filled-in 9router `.env` — flagged for a
+- Live end-to-end smoke test against real Supabase + a filled-in LLM endpoint `.env` (Gemini) — flagged for a
   manual check, not run as part of this task (same carve-out as every other build-order item).
